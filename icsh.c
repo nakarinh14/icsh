@@ -34,26 +34,44 @@ int process_command(char command[]) {
         } 
         else if (!strcmp(token, exit_trigger)) {
             token = strtok(NULL, delimiter);
-            long code = strtol(token, NULL, 10);
+            long code = (int) strtol(token, NULL, 10);
             printf("Exiting program with code %ld\n", code);
             exit(code);
         } 
         else if (!strcmp(token, prev_trigger)) { 
             if(prev_command[0] != '\0'){
-                printf("%s", prev_command);
+                printf("%s\n", prev_command);
                 return process_command(prev_command);
             }  
         } else {
             printf("bad command\n");
         }
-        
-        strcpy(prev_command, command);
+        if(strcmp(prev_command, command)) strcpy(prev_command, command);
     }
 
     return run;
 }
 
-int main() {
+
+int run_command(char command[]) {
+    // Parse new line from fgets. src: https://stackoverflow.com/questions/2693776/removing-trailing-newline-character-from-fgets-input
+    command[strcspn(command, "\n")] = 0;
+    if(command[0] != 0) {
+        return process_command(command);
+    }
+    return 1;
+}
+
+void read_file(char fileName[]) {
+    FILE* file = fopen(fileName, "r");
+    char line[256];
+    while(fgets(line, sizeof(line), file)) {
+        run_command(line);
+    }
+}
+
+
+int main(int argc, char *argv[]) {
     printf("Starting IC shell\n");
     printf("icsh $ <waiting for command>\n");
 
@@ -62,14 +80,15 @@ int main() {
     char command[N_CHAR];
     char args[N_CHAR];
     
+    if(argc == 2) {
+        read_file(argv[1]);
+        return 0;
+    }
+
     while (run) {
         printf("icsh $ ");
         if(fgets(command, N_CHAR, stdin) != NULL){
-            // Parse new line from fgets. src: https://stackoverflow.com/questions/2693776/removing-trailing-newline-character-from-fgets-input
-            command[strcspn(command, "\n")] = 0;
-            if(command[0] != 0) {
-                run = process_command(command);
-            }
+            run_command(command);
         }
     }
     
