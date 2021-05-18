@@ -1,0 +1,15 @@
+ test
+.
+..
+.git
+.gitignore
+a.txt
+icsh
+icsh.c
+t.txt
+t1.txt
+test
+test.sh
+test.txt
+users
+who.txt

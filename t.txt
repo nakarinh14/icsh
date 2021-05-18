@@ -1,0 +1,11 @@
+new command: ls -a
+ test
+.
+..
+.git
+.gitignore
+icsh
+icsh.c
+t.txt
+test
+test.sh

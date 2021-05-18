@@ -4,6 +4,9 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include<signal.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <ctype.h>
 
 # define N_CHAR 100
 
@@ -16,20 +19,101 @@ char echo_ec[] = "echo $?";
 char exit_trigger[] = "exit";
 char prev_trigger[] = "!!";
 char shell_comment[] = "##";
-const char delimiter[] = " ";
+const char ws_delim[] = " ";
 
 // Not sure if this is optimum inits
 int fg_pid = 0; 
 int prev_exit_status = 0;
 
-int process_command(char command[], int script_mode) {
+// Saved current terminal STDOUT
+int saved_stdout; 
 
-    int run = 1;
+char *trim_ws(char *command){
+    char *tmp = (char *) malloc(strlen(command) + 1);
+    strcpy(tmp, command);
+    char *end;
+    // https://stackoverflow.com/questions/122616/how-do-i-trim-leading-trailing-whitespace-in-a-standard-way
+
+    // Trim leading space
+    while(isspace((unsigned char)*tmp)) tmp++;
+    if(*tmp == 0)  // All spaces?
+    return tmp;
+
+    // Trim trailing space
+    end = tmp + strlen(tmp) - 1;
+    while(end > tmp && isspace((unsigned char)*end)) end--;
+
+    // Write new null terminator character
+    end[1] = '\0';
+
+    return tmp;
+}
+
+void redir_out(char *filename) {
+    int fd = open(filename, O_TRUNC | O_CREAT | O_WRONLY, 0666);
+    if ((fd <= 0)) {
+        fprintf (stderr, "Couldn't open a file\n");
+        exit (errno);
+    }
+    dup2(fd, STDOUT_FILENO); 
+    dup2(fd, STDERR_FILENO);
+    close(fd);
+}
+
+void redir_in(char *filename) {
+    int in = open(filename, O_RDONLY);
+    if ((in <= 0)) {
+        fprintf (stderr, "Couldn't open a file\n");
+        exit (errno);
+    }
+    dup2 (in, STDIN_FILENO);
+    close(in);
+}
+
+char* check_io_redir(char command[]) {
+    if(strchr(command, '>')  != NULL) {
+        return ">";
+    }
+    else if (strchr(command, '<') != NULL) {
+        return "<";
+    }
+    return NULL;
+}
+
+void redir_int(char filename[]) { }
+
+char* process_redir(char command[]) {
+    char* redir_char = check_io_redir(command);
+
+    if(redir_char != NULL) {
+
+        char *token;
+        char *tmp = (char *) malloc(strlen(command) + 1);
+        strcpy(tmp, command);
+
+        token = strtok(tmp, redir_char);
+        char *parsed_command = trim_ws(token);
+        token = strtok(NULL, redir_char);
+        char *filename = trim_ws(token);
+
+        if(strchr(redir_char, '>')) 
+            redir_out(filename);
+        else if (strchr(redir_char, '<')) 
+            redir_in(filename);
+        
+        free(tmp);
+        return parsed_command;
+    }
+    free(redir_char);
+    return command;
+}
+
+void process_command(char command[], int script_mode) {
     char *token;
     char *tmp = (char *) malloc(strlen(command) + 1);
 
     strcpy(tmp, command);
-    token = strtok(tmp, delimiter);
+    token = strtok(tmp, ws_delim);
 
     if(token != NULL) {
         if(!strcmp(token, echo_trigger)){
@@ -37,19 +121,19 @@ int process_command(char command[], int script_mode) {
                 printf("%d", prev_exit_status);
             }
             else {
-                token = strtok(NULL, delimiter);
+                token = strtok(NULL, ws_delim);
                 while(token != NULL) {
                     printf("%s ", token);
-                    token = strtok(NULL, delimiter);
+                    token = strtok(NULL, ws_delim);
                 }
             }
             printf("\n");
             prev_exit_status = 0;
         } 
         else if (!strcmp(token, exit_trigger)) {
-            token = strtok(NULL, delimiter);
+            token = strtok(NULL, ws_delim);
             long code = (int) strtol(token, NULL, 10);
-            if(!script_mode) printf("Exiting program with code %ld\n", code);
+            if(!script_mode) printf("Exiting program with code %ld\n", code % 256);
             exit(code);
         } 
         else if (!strcmp(token, prev_trigger)) { 
@@ -63,20 +147,23 @@ int process_command(char command[], int script_mode) {
         } else {
             int status;
             int pid;
-            int i = 0;
-            // Init tokens
-            char * prog_arv[N_CHAR];
-            prog_arv[i] = token;
-            while(token != NULL) {
-                token = strtok(NULL, delimiter);
-                prog_arv[++i] = token;
-            }
-            prog_arv[i+1] = NULL;
-
+   
             if((pid=fork()) < 0) {
                 perror("Fork failled");
             } 
             if(!pid) {
+                // All redirection initialized in child process
+                command = process_redir(command);
+                // Init tokens
+                int i = 0;
+                char * prog_arv[N_CHAR];
+                token = strtok(command, ws_delim);
+                prog_arv[i] = token;
+                while(token != NULL) {
+                    token = strtok(NULL, ws_delim);
+                    prog_arv[++i] = token;
+                }
+                prog_arv[i+1] = NULL;
                 execvp(prog_arv[0], prog_arv);
             }
             if (pid) {
@@ -89,8 +176,8 @@ int process_command(char command[], int script_mode) {
         // If condition is here as strcpy same string content leads to early abortion.
         if(strcmp(prev_command, command)) strcpy(prev_command, command);
     }
-
-    return run;
+    free(tmp);
+    dup2(saved_stdout, 1); // Restore stdout if I/O redirection was enabled
 }
 
 int run_command(char command[], int script_mode) {
@@ -99,7 +186,7 @@ int run_command(char command[], int script_mode) {
     command[strcspn(command, "\n")] = 0;
     // If command is not empty and not shell comment
     if(command[0] != 0 && strncmp(command, shell_comment, strlen(shell_comment))) {
-        return process_command(command, script_mode);
+        process_command(command, script_mode);
     }
     return 1;
 }
@@ -142,8 +229,8 @@ void init_sas() {
 }
 
 int main(int argc, char *argv[]) {
-    printf("Starting IC shell\n");
     init_sas();
+    saved_stdout = dup(STDOUT_FILENO);
 
     char command[N_CHAR];
     char args[N_CHAR];
@@ -152,7 +239,7 @@ int main(int argc, char *argv[]) {
         read_file(argv[1]);
         return 0;
     }
-
+    printf("Starting IC shell\n");
     printf("icsh $ <waiting for command>\n");
     while (1) {
         printf("icsh $ ");
