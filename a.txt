@@ -1,8 +1,0 @@
-new command: ls
- test
-a.txt
-icsh
-icsh.c
-t.txt
-test
-test.sh
