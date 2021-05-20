@@ -189,6 +189,7 @@ void process_command(char command[], int script_mode) {
                 }
                 prog_arv[i+1] = NULL;
                 execvp(prog_arv[0], prog_arv);
+                exit(errno)
             }
             else if (pid) {
                 fg_pid = pid;
