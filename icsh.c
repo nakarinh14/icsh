@@ -1,7 +1,8 @@
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
 #include <unistd.h>
 #include<signal.h>
 #include <errno.h>
@@ -18,12 +19,15 @@ char echo_trigger[] = "echo";
 char echo_ec[] = "echo $?";
 char exit_trigger[] = "exit";
 char prev_trigger[] = "!!";
+char jobs_trigger[] = "jobs";
 char shell_comment[] = "##";
 const char ws_delim[] = " ";
 
 // Not sure if this is optimum inits
 int fg_pid = 0; 
+int cjob_id = 0;
 int prev_exit_status = 0;
+int ppid;
 
 // Saved current terminal STDOUT
 int saved_stdout; 
@@ -71,12 +75,10 @@ void redir_in(char *filename) {
 }
 
 char* check_io_redir(char command[]) {
-    if(strchr(command, '>')  != NULL) {
+    if(strchr(command, '>')  != NULL) 
         return ">";
-    }
-    else if (strchr(command, '<') != NULL) {
+    else if (strchr(command, '<') != NULL)
         return "<";
-    }
     return NULL;
 }
 
@@ -108,11 +110,27 @@ char* process_redir(char command[]) {
     return command;
 }
 
+int is_bgp(char command[]){
+    if(command && *command && command[strlen(command) - 1] == '&') {
+        command[strlen(command) - 1] = '\0';
+        // Trim trailing space
+        char *end;
+        end = command + strlen(command) - 1;
+        while(end > command && isspace((unsigned char)*end)) end--;
+        // Write new null terminator character
+        end[1] = '\0';
+        return 1;
+    }
+    return 0;
+}
+
 void process_command(char command[], int script_mode) {
     char *token;
     char *tmp = (char *) malloc(strlen(command) + 1);
-
+    
+    int bgp = is_bgp(command);
     strcpy(tmp, command);
+    
     token = strtok(tmp, ws_delim);
 
     if(token != NULL) {
@@ -133,7 +151,8 @@ void process_command(char command[], int script_mode) {
         else if (!strcmp(token, exit_trigger)) {
             token = strtok(NULL, ws_delim);
             long code = (int) strtol(token, NULL, 10);
-            if(!script_mode) printf("Exiting program with code %ld\n", code % 256);
+            if(!script_mode) 
+                printf("Exiting program with code %ld\n", code % 256);
             exit(code);
         } 
         else if (!strcmp(token, prev_trigger)) { 
@@ -144,14 +163,19 @@ void process_command(char command[], int script_mode) {
                 return process_command(prev_command, script_mode);
             }  
             prev_exit_status = 0;
-        } else {
+        }
+        else if(!strcmp(token, jobs_trigger)) {
+            printf("gettings jobs");
+        }
+        else {
             int status;
             int pid;
-   
             if((pid=fork()) < 0) {
                 perror("Fork failled");
             } 
-            if(!pid) {
+            else if(!pid) {
+                // setpgid(0,0);
+                // tcsetpgrp (0, getpid());
                 // All redirection initialized in child process
                 command = process_redir(command);
                 // Init tokens
@@ -166,15 +190,23 @@ void process_command(char command[], int script_mode) {
                 prog_arv[i+1] = NULL;
                 execvp(prog_arv[0], prog_arv);
             }
-            if (pid) {
+            else if (pid) {
                 fg_pid = pid;
-                waitpid(pid, &status, 0);
+                // if(!bgp) {
+                //     setpgid(fg_pid, fg_pid);
+                //     tcsetpgrp (0, fg_pid);
+                //     waitpid(fg_pid, &status, 0);
+                //     tcsetpgrp (0, ppid);
+                //     prev_exit_status = WEXITSTATUS(status);
+                // }
+                waitpid(fg_pid, &status, 0);
                 prev_exit_status = WEXITSTATUS(status);
                 fg_pid = 0;
             }
         }
         // If condition is here as strcpy same string content leads to early abortion.
-        if(strcmp(prev_command, command)) strcpy(prev_command, command);
+        if(strcmp(prev_command, command)) 
+            strcpy(prev_command, command);
     }
     free(tmp);
     dup2(saved_stdout, 1); // Restore stdout if I/O redirection was enabled
@@ -211,9 +243,14 @@ void stop_handler() {
     }
 }
 
+void sigttin_handler() {}
+void sigttou_handle() {}
+
 void init_sas() {
     struct sigaction sa, oldsa;
     struct sigaction sh, oldsh;
+    struct sigaction stin, oldstin;
+    struct sigaction stou, oldstou;
 
     // ctrl+c = SIGINT
     sa.sa_handler = fg_handler;
@@ -226,9 +263,20 @@ void init_sas() {
     sh.sa_flags = 0;
     sigemptyset(&sh.sa_mask);
     sigaction(SIGTSTP, &sh, &oldsh);
+
+    stin.sa_handler = sigttin_handler;
+    stin.sa_flags = 0;
+    sigemptyset(&stin.sa_mask);
+    sigaction(SIGTTIN, &stin, &oldstin);
+
+    stou.sa_handler = sigttou_handle;
+    stou.sa_flags = 0;
+    sigemptyset(&stou.sa_mask);
+    sigaction(SIGTTOU, &stou, &oldstou);
 }
 
 int main(int argc, char *argv[]) {
+    ppid = getpid();
     init_sas();
     saved_stdout = dup(STDOUT_FILENO);
 
