@@ -166,12 +166,16 @@ void process_fg(char* token) {
     int job_id = parse_amp_job(token);
     pid_t pid = jobs_to_pid[job_id];
     if(pid) {
-        printf("%s\n", pids_command[pid].command);
+        struct job* job_ = &pids_command[pid];
+        job_->status = 0;
+        printf("%s\n", job_->command);
         swap_jobs_order(job_id);
+        kill(pid, SIGCONT);
         int status;
         setpgid(pid, pid);
         tcsetpgrp (0, pid);
-        kill(pid, SIGCONT);
+        // Double waitpid to deal when state change to SIGCONT;
+        waitpid(pid, &status, 0);
         waitpid(pid, &status, 0);
         tcsetpgrp (0, ppid);
         prev_exit_status = WEXITSTATUS(status);
@@ -283,7 +287,6 @@ void process_command(char command[], int script_mode) {
             } 
             else if(!pid) {
                 setpgid(0, 0);
-                
                 // All redirection initialized in child process
                 command = process_redir(command);
                 // Init tokens
@@ -353,11 +356,11 @@ void stop_handler() {}
 void ChildHandler (int sig, siginfo_t *sip, void *notused){
     int status = 0;
    /* The WNOHANG flag means that if there's no news, we don't wait*/
-    if (sip->si_pid == waitpid (sip->si_pid, &status, WNOHANG)){
+    if (sip->si_pid == waitpid (sip->si_pid, &status, WNOHANG | WUNTRACED)){
         /* A SIGCHLD doesn't necessarily mean death - a quick check */
         if (WIFEXITED(status)|| WTERMSIG(status)) {
             struct job* job_ = &pids_command[sip->si_pid];
-            if(job_ != NULL && job_->status && job_->job_id) {
+            if(WIFEXITED(status) && job_ != NULL && job_->status == 1 && job_->job_id) {
                 char sign = get_jobs_sign(job_->job_id);
                 printf("\n[%d]%c  Done                    %s\n",  job_->job_id, sign, job_->command);
                 fflush (stdout); 
@@ -368,25 +371,21 @@ void ChildHandler (int sig, siginfo_t *sip, void *notused){
                 null_job.pid = 0;
                 pids_command[sip->si_pid] = null_job;
             }
-        } 
-    } 
-    else {
-        // Just lazily assume the child is stopped in the else clause lol.
-        struct job* job_ = &pids_command[sip->si_pid];
-        if(job_ != NULL) {
-            // If not in any job queue (fresh foreground job), add it.
-            if(!(job_->job_id)) {
-                job_->job_id = ++current_nb;
-                jobs_to_pid[job_->job_id] = sip->si_pid;
-                swap_jobs_order(job_->job_id);
-            } 
-            // Else, just update job status as Stopped (2)
-            job_->status = 2;
-            char sign = get_jobs_sign(job_->job_id);
-            printf("\n[%d]%c  Stopped                    %s\n",  job_->job_id, sign, job_->command);
-            fflush (stdout); 
+            else if (WIFSTOPPED(status) && job_ != NULL) {
+                // If not in any job queue (fresh foreground job), add it.
+                if(!(job_->job_id)) {
+                    job_->job_id = ++current_nb;
+                    jobs_to_pid[job_->job_id] = sip->si_pid;
+                    swap_jobs_order(job_->job_id);
+                } 
+                // Else, just update job status as Stopped (2)
+                job_->status = 2;
+                char sign = get_jobs_sign(job_->job_id);
+                printf("\n[%d]%c  Stopped                    %s\n",  job_->job_id, sign, job_->command);
+                fflush (stdout); 
+            }
         }
-    }
+    } 
 }
 
 void init_sas() {
@@ -417,13 +416,11 @@ void init_sas() {
 }
 
 int main(int argc, char *argv[]) {
-    memset (pids_command, 0, N_PID);
     ppid = getpid();
     init_sas();
     saved_stdout = dup(STDOUT_FILENO);
 
     char command[N_CHAR];
-    char args[N_CHAR];
     
     if(argc == 2) {
         read_file(argv[1]);
